@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
 )
@@ -94,6 +93,7 @@ func TeslaMateAPICarsChargesDetailsV1(c *gin.Context) {
 		RangeRated        RatedRange      `json:"range_rated"`         // RatedRange
 		OutsideTempAvg    *float64        `json:"outside_temp_avg"`    // float64
 		Odometer          float64         `json:"odometer"`            // float64
+		Ongoing           bool            `json:"ongoing"`             // bool
 		ChargeDetails     []ChargeDetails `json:"charge_details"`      // struct
 	}
 	// TeslaMateUnits struct - child of Data
@@ -157,9 +157,9 @@ func TeslaMateAPICarsChargesDetailsV1(c *gin.Context) {
 		LEFT JOIN addresses address ON address_id = address.id
 		LEFT JOIN positions position ON position_id = position.id
 		LEFT JOIN geofences geofence ON geofence_id = geofence.id
-		LEFT JOIN charges ON charging_processes.id = charges.id
-		WHERE charging_processes.car_id=$1 AND charging_processes.id=$2 AND charging_processes.end_date IS NOT NULL
-		ORDER BY start_date DESC;`
+	LEFT JOIN charges ON charging_processes.id = charges.id
+	WHERE charging_processes.car_id=$1 AND charging_processes.id=$2
+	ORDER BY start_date DESC;`
 	row := db.QueryRow(query, CarID, ChargeID)
 
 	err := row.Scan(
@@ -187,8 +187,10 @@ func TeslaMateAPICarsChargesDetailsV1(c *gin.Context) {
 
 	if endDate.Valid {
 		charge.EndDate = &endDate.String
+		charge.Ongoing = false
 	} else {
 		charge.EndDate = nil
+		charge.Ongoing = true
 	}
 	if energyAdded.Valid {
 		charge.ChargeEnergyAdded = &energyAdded.Float64

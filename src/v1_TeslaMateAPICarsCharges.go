@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
+	"time"
 
 	"database/sql"
 )
@@ -51,6 +52,7 @@ func TeslaMateAPICarsChargesV1(c *gin.Context) {
 		RangeRated        PreferredRange `json:"range_rated"`         // PreferredRange
 		OutsideTempAvg    *float64       `json:"outside_temp_avg"`    // *float64
 		Odometer          float64        `json:"odometer"`            // float64
+		Ongoing           bool           `json:"ongoing"`             // bool
 	}
 	// TeslaMateUnits struct - child of Data
 	type TeslaMateUnits struct {
@@ -124,6 +126,8 @@ func TeslaMateAPICarsChargesV1(c *gin.Context) {
 
 	// defer closing rows
 	defer rows.Close()
+
+	var ongoingIncluded bool
 
 	// looping through all results
 	for rows.Next() {
@@ -244,6 +248,20 @@ func TeslaMateAPICarsChargesV1(c *gin.Context) {
 			if charge.OutsideTempAvg != nil {
 				*charge.OutsideTempAvg = celsiusToFahrenheit(*charge.OutsideTempAvg)
 			}
+		}
+
+		if charge.EndDate == nil {
+			startTime, err := time.Parse("2006-01-02 15:04:05", charge.StartDate)
+			if err != nil || time.Since(startTime) > 24*time.Hour {
+				continue
+			}
+			if ongoingIncluded {
+				continue
+			}
+			ongoingIncluded = true
+			charge.Ongoing = true
+		} else {
+			charge.Ongoing = false
 		}
 
 		// adjusting to timezone differences from UTC to be userspecific
