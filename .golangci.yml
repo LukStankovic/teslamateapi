@@ -1,0 +1,29 @@
+linters:
+  enable-all: true
+#  disable:
+#    - cyclop
+#    - exhaustruct
+#    - funlen
+#    - gci
+#    - err113
+#    - gomoddirectives
+#    - ireturn
+#    - nlreturn
+#    - prealloc
+#    - tagliatelle
+#    - varnamelen
+#    - wrapcheck
+#    - wsl
+#    - perfsprint
+#    - interfacebloat
+#    - depguard
+#    - protogetter
+#    - nolintlint
+#    - testifylint
+#    - rowserrcheck
+#    - nilnil
+#    - errchkjson
+#    - musttag
+#    - forbidigo
+#    - dupl
+#    - gochecknoglobals
