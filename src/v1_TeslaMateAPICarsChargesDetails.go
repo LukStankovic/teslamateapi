@@ -28,11 +28,16 @@ func TeslaMateAPICarsChargesDetailsV1(c *gin.Context) {
 	}
 	// BatteryDetails struct - child of Charges
 	type BatteryDetails struct {
-		StartBatteryLevel int `json:"start_battery_level"` // int
-		EndBatteryLevel   int `json:"end_battery_level"`   // int
+		StartBatteryLevel *int `json:"start_battery_level"` // int
+		EndBatteryLevel   *int `json:"end_battery_level"`   // int
 	}
-	// PreferredRange struct - child of Charges
-	type PreferredRange struct {
+	// IdealRange struct - child of Charges
+	type IdealRange struct {
+		StartRange *float64 `json:"start_range"` // float64
+		EndRange   *float64 `json:"end_range"`   // float64
+	}
+	// RatedRange struct - child of Charges
+	type RatedRange struct {
 		StartRange float64 `json:"start_range"` // float64
 		EndRange   float64 `json:"end_range"`   // float64
 	}
@@ -65,29 +70,29 @@ func TeslaMateAPICarsChargesDetailsV1(c *gin.Context) {
 		Date                 string          `json:"date"`                     // string
 		BatteryLevel         int             `json:"battery_level"`            // int
 		UsableBatteryLevel   int             `json:"usable_battery_level"`     // int
-		ChargeEnergyAdded    float64         `json:"charge_energy_added"`      // float64
+		ChargeEnergyAdded    *float64        `json:"charge_energy_added"`      // float64
 		NotEnoughPowerToHeat NullBool        `json:"not_enough_power_to_heat"` // bool
 		ChargerDetails       ChargerDetails  `json:"charger_details"`          // struct
 		BatteryInfo          BatteryInfo     `json:"battery_info"`             // struct
 		ConnChargeCable      string          `json:"conn_charge_cable"`        // string
 		FastChargerInfo      FastChargerInfo `json:"fast_charger_info"`        // struct
-		OutsideTemp          float64         `json:"outside_temp"`             // float64
+		OutsideTemp          *float64        `json:"outside_temp"`             // float64
 	}
 	// Charge struct - child of Data
 	type Charge struct {
 		ChargeID          int             `json:"charge_id"`           // int
 		StartDate         string          `json:"start_date"`          // string
-		EndDate           string          `json:"end_date"`            // string
+		EndDate           *string         `json:"end_date"`            // string
 		Address           string          `json:"address"`             // string
-		ChargeEnergyAdded float64         `json:"charge_energy_added"` // float64
+		ChargeEnergyAdded *float64        `json:"charge_energy_added"` // float64
 		ChargeEnergyUsed  float64         `json:"charge_energy_used"`  // float64
 		Cost              float64         `json:"cost"`                // float64
-		DurationMin       int             `json:"duration_min"`        // int
-		DurationStr       string          `json:"duration_str"`        // string
+		DurationMin       *int            `json:"duration_min"`        // int
+		DurationStr       *string         `json:"duration_str"`        // string
 		BatteryDetails    BatteryDetails  `json:"battery_details"`     // BatteryDetails
-		RangeIdeal        PreferredRange  `json:"range_ideal"`         // PreferredRange
-		RangeRated        PreferredRange  `json:"range_rated"`         // PreferredRange
-		OutsideTempAvg    float64         `json:"outside_temp_avg"`    // float64
+		RangeIdeal        IdealRange      `json:"range_ideal"`         // IdealRange
+		RangeRated        RatedRange      `json:"range_rated"`         // RatedRange
+		OutsideTempAvg    *float64        `json:"outside_temp_avg"`    // float64
 		Odometer          float64         `json:"odometer"`            // float64
 		ChargeDetails     []ChargeDetails `json:"charge_details"`      // struct
 	}
@@ -113,6 +118,15 @@ func TeslaMateAPICarsChargesDetailsV1(c *gin.Context) {
 		charge                        Charge
 		ChargeDetailsData             []ChargeDetails
 		UnitsLength, UnitsTemperature string
+		endDate                       sql.NullString
+		energyAdded                   sql.NullFloat64
+		startIdeal                    sql.NullFloat64
+		endIdeal                      sql.NullFloat64
+		startBattery                  sql.NullInt64
+		endBattery                    sql.NullInt64
+		durationMin                   sql.NullInt64
+		durationStr                   sql.NullString
+		outsideTemp                   sql.NullFloat64
 	)
 
 	// getting data from database
@@ -122,7 +136,7 @@ func TeslaMateAPICarsChargesDetailsV1(c *gin.Context) {
 			start_date,
 			end_date,
 			COALESCE(geofence.name, CONCAT_WS(', ', COALESCE(address.name, nullif(CONCAT_WS(' ', address.road, address.house_number), '')), address.city)) AS address,
-			COALESCE(charging_processes.charge_energy_added, 0) AS charge_energy_added,
+			charging_processes.charge_energy_added,
 			COALESCE(charge_energy_used, 0) AS charge_energy_used,
 			COALESCE(cost, 0) AS cost,
 			start_ideal_range_km AS start_ideal_range,
@@ -148,29 +162,80 @@ func TeslaMateAPICarsChargesDetailsV1(c *gin.Context) {
 		ORDER BY start_date DESC;`
 	row := db.QueryRow(query, CarID, ChargeID)
 
-	// scanning row and putting values into the charge
 	err := row.Scan(
 		&charge.ChargeID,
 		&charge.StartDate,
-		&charge.EndDate,
+		&endDate,
 		&charge.Address,
-		&charge.ChargeEnergyAdded,
+		&energyAdded,
 		&charge.ChargeEnergyUsed,
 		&charge.Cost,
-		&charge.RangeIdeal.StartRange,
-		&charge.RangeIdeal.EndRange,
+		&startIdeal,
+		&endIdeal,
 		&charge.RangeRated.StartRange,
 		&charge.RangeRated.EndRange,
-		&charge.BatteryDetails.StartBatteryLevel,
-		&charge.BatteryDetails.EndBatteryLevel,
-		&charge.DurationMin,
-		&charge.DurationStr,
-		&charge.OutsideTempAvg,
+		&startBattery,
+		&endBattery,
+		&durationMin,
+		&durationStr,
+		&outsideTemp,
 		&charge.Odometer,
 		&UnitsLength,
 		&UnitsTemperature,
 		&CarName,
 	)
+
+	if endDate.Valid {
+		charge.EndDate = &endDate.String
+	} else {
+		charge.EndDate = nil
+	}
+	if energyAdded.Valid {
+		charge.ChargeEnergyAdded = &energyAdded.Float64
+	} else {
+		charge.ChargeEnergyAdded = nil
+	}
+	if startIdeal.Valid {
+		charge.RangeIdeal.StartRange = new(float64)
+		*charge.RangeIdeal.StartRange = startIdeal.Float64
+	} else {
+		charge.RangeIdeal.StartRange = nil
+	}
+	if endIdeal.Valid {
+		charge.RangeIdeal.EndRange = new(float64)
+		*charge.RangeIdeal.EndRange = endIdeal.Float64
+	} else {
+		charge.RangeIdeal.EndRange = nil
+	}
+	if startBattery.Valid {
+		charge.BatteryDetails.StartBatteryLevel = new(int)
+		*charge.BatteryDetails.StartBatteryLevel = int(startBattery.Int64)
+	} else {
+		charge.BatteryDetails.StartBatteryLevel = nil
+	}
+	if endBattery.Valid {
+		charge.BatteryDetails.EndBatteryLevel = new(int)
+		*charge.BatteryDetails.EndBatteryLevel = int(endBattery.Int64)
+	} else {
+		charge.BatteryDetails.EndBatteryLevel = nil
+	}
+	if durationMin.Valid {
+		charge.DurationMin = new(int)
+		*charge.DurationMin = int(durationMin.Int64)
+	} else {
+		charge.DurationMin = nil
+	}
+	if durationStr.Valid {
+		charge.DurationStr = &durationStr.String
+	} else {
+		charge.DurationStr = nil
+	}
+	if outsideTemp.Valid {
+		charge.OutsideTempAvg = new(float64)
+		*charge.OutsideTempAvg = outsideTemp.Float64
+	} else {
+		charge.OutsideTempAvg = nil
+	}
 
 	switch err {
 	case sql.ErrNoRows:
@@ -186,20 +251,29 @@ func TeslaMateAPICarsChargesDetailsV1(c *gin.Context) {
 
 	// converting values based of settings UnitsLength
 	if UnitsLength == "mi" {
-		charge.RangeIdeal.StartRange = kilometersToMiles(charge.RangeIdeal.StartRange)
-		charge.RangeIdeal.EndRange = kilometersToMiles(charge.RangeIdeal.EndRange)
+		if charge.RangeIdeal.StartRange != nil {
+			*charge.RangeIdeal.StartRange = kilometersToMiles(*charge.RangeIdeal.StartRange)
+		}
+		if charge.RangeIdeal.EndRange != nil {
+			*charge.RangeIdeal.EndRange = kilometersToMiles(*charge.RangeIdeal.EndRange)
+		}
+		// For rated range (non-nullable), convert directly
 		charge.RangeRated.StartRange = kilometersToMiles(charge.RangeRated.StartRange)
 		charge.RangeRated.EndRange = kilometersToMiles(charge.RangeRated.EndRange)
 		charge.Odometer = kilometersToMiles(charge.Odometer)
 	}
 	// converting values based of settings UnitsTemperature
 	if UnitsTemperature == "F" {
-		charge.OutsideTempAvg = celsiusToFahrenheit(charge.OutsideTempAvg)
+		if charge.OutsideTempAvg != nil {
+			*charge.OutsideTempAvg = celsiusToFahrenheit(*charge.OutsideTempAvg)
+		}
 	}
 
 	// adjusting to timezone differences from UTC to be userspecific
 	charge.StartDate = getTimeInTimeZone(charge.StartDate)
-	charge.EndDate = getTimeInTimeZone(charge.EndDate)
+	if charge.EndDate != nil {
+		*charge.EndDate = getTimeInTimeZone(*charge.EndDate)
+	}
 
 	// getting detailed charge data from database
 	query = `
@@ -277,8 +351,8 @@ func TeslaMateAPICarsChargesDetailsV1(c *gin.Context) {
 
 		}
 		// converting values based of settings UnitsTemperature
-		if UnitsTemperature == "F" {
-			chargedetails.OutsideTemp = celsiusToFahrenheit(chargedetails.OutsideTemp)
+		if UnitsTemperature == "F" && chargedetails.OutsideTemp != nil {
+			*chargedetails.OutsideTemp = celsiusToFahrenheit(*chargedetails.OutsideTemp)
 		}
 		// adjusting to timezone differences from UTC to be userspecific
 		chargedetails.Date = getTimeInTimeZone(chargedetails.Date)
