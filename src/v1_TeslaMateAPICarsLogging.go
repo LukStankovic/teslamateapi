@@ -94,7 +94,12 @@ func TeslaMateAPICarsLoggingV1(c *gin.Context) {
 		TeslaMateAPIHandleOtherResponse(c, http.StatusInternalServerError, "TeslaMateAPICarsLoggingV1", gin.H{"error": "internal io reading error"})
 		return
 	}
-	json.Unmarshal([]byte(respBody), &jsonData)
+	err = json.Unmarshal([]byte(respBody), &jsonData)
+	if err != nil {
+		log.Println("[error] TeslaMateAPICarsLoggingV1 error in json.Unmarshal:", err)
+		TeslaMateAPIHandleOtherResponse(c, http.StatusInternalServerError, "TeslaMateAPICarsLoggingV1", gin.H{"error": "internal json unmarshalling error"})
+		return
+	}
 
 	// return jsonData
 	// use TeslaMateAPIHandleOtherResponse since we use the statusCode from Tesla API
