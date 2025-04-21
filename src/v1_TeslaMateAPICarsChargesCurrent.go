@@ -34,6 +34,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	type PreferredRange struct {
 		StartRange   float64 `json:"start_range"`   // float64
 		CurrentRange float64 `json:"current_range"` // float64
+		AddedRange   float64 `json:"added_range"`   // float64
 	}
 	// ChargerDetails struct - child of ChargeDetails
 	type ChargerDetails struct {
@@ -45,13 +46,12 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	}
 	// FastChargerInfo struct - child of ChargeDetails
 	type FastChargerInfo struct {
-		FastChargerPresent bool           `json:"fast_charger_present"` // bool
-		FastChargerBrand   sql.NullString `json:"fast_charger_brand"`   // string
-		FastChargerType    string         `json:"fast_charger_type"`    // string
+		FastChargerPresent bool        `json:"fast_charger_present"` // bool
+		FastChargerBrand   interface{} `json:"fast_charger_brand"`   // string or null
+		FastChargerType    interface{} `json:"fast_charger_type"`    // string or null
 	}
 	// BatteryInfo struct - child of ChargeDetails
 	type BatteryInfo struct {
-		IdealBatteryRange    float64  `json:"ideal_battery_range"`     // float64
 		RatedBatteryRange    float64  `json:"rated_battery_range"`     // float64
 		BatteryHeater        bool     `json:"battery_heater"`          // bool
 		BatteryHeaterOn      bool     `json:"battery_heater_on"`       // bool
@@ -67,7 +67,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		NotEnoughPowerToHeat NullBool        `json:"not_enough_power_to_heat"` // bool
 		ChargerDetails       ChargerDetails  `json:"charger_details"`          // struct
 		BatteryInfo          BatteryInfo     `json:"battery_info"`             // struct
-		ConnChargeCable      string          `json:"conn_charge_cable"`        // string
+		ConnChargeCable      interface{}     `json:"conn_charge_cable"`        // string or null
 		FastChargerInfo      FastChargerInfo `json:"fast_charger_info"`        // struct
 		OutsideTemp          float64         `json:"outside_temp"`             // float64
 	}
@@ -84,8 +84,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		DurationMin       int             `json:"duration_min"`        // int
 		DurationStr       string          `json:"duration_str"`        // string
 		BatteryDetails    BatteryDetails  `json:"battery_details"`     // BatteryDetails
-		RangeIdeal        PreferredRange  `json:"range_ideal"`         // PreferredRange
-		RangeRated        PreferredRange  `json:"range_rated"`         // PreferredRange
+		RatedRange        PreferredRange  `json:"rated_range"`         // PreferredRange
 		OutsideTempAvg    float64         `json:"outside_temp_avg"`    // float64
 		Odometer          float64         `json:"odometer"`            // float64
 		ChargeDetails     []ChargeDetails `json:"charge_details"`      // struct
@@ -117,15 +116,14 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 
 	// Create temp vars to handle NULL values in the database
 	var (
-		startIdealRange, currentIdealRange        sql.NullFloat64
-		startRatedRange, currentRatedRange        sql.NullFloat64
-		startBatteryLevel, currentBatteryLevel    sql.NullInt64
-		chargeEnergyAdded, chargeEnergyUsed, cost sql.NullFloat64
-		outsideTempAvg                            sql.NullFloat64
-		odometer                                  sql.NullFloat64
-		durationMin                               sql.NullFloat64 // Changed from sql.NullInt64 to sql.NullFloat64
-		durationStr, address                      sql.NullString
-		endDate                                   sql.NullString
+		startRatedRange, currentRatedRange, addedRatedRange sql.NullFloat64
+		startBatteryLevel, currentBatteryLevel              sql.NullInt64
+		chargeEnergyAdded, chargeEnergyUsed, cost           sql.NullFloat64
+		outsideTempAvg                                      sql.NullFloat64
+		odometer                                            sql.NullFloat64
+		durationMin                                         sql.NullFloat64
+		durationStr, address                                sql.NullString
+		endDate                                             sql.NullString
 	)
 
 	// Get the most recent charging process for this car, prioritizing charges in progress
@@ -135,18 +133,17 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 			start_date,
 			end_date,
 			COALESCE(geofence.name, CONCAT_WS(', ', COALESCE(address.name, nullif(CONCAT_WS(' ', address.road, address.house_number), '')), address.city)) AS address,
-			COALESCE(charging_processes.charge_energy_added, 0) AS charge_energy_added,
+			(SELECT charge_energy_added FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) AS charge_energy_added,
 			COALESCE(charge_energy_used, 0) AS charge_energy_used,
 			COALESCE(cost, 0) AS cost,
-			start_ideal_range_km AS start_ideal_range,
-			(SELECT ideal_battery_range_km FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) AS current_ideal_range,
 			start_rated_range_km AS start_rated_range,
 			(SELECT rated_battery_range_km FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) AS current_rated_range,
-			start_battery_level,
+			COALESCE((SELECT rated_battery_range_km FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) - start_rated_range_km, 0) AS added_rated_range,
+			(SELECT battery_level FROM charges WHERE charging_process_id = charging_processes.id ORDER BY date ASC LIMIT 1) AS start_battery_level,
 			(SELECT battery_level FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) AS current_battery_level,
 			EXTRACT(EPOCH FROM (COALESCE(end_date, NOW()) - start_date))/60 AS duration_min,
 			TO_CHAR((EXTRACT(EPOCH FROM (COALESCE(end_date, NOW()) - start_date))/60 * INTERVAL '1 minute'), 'HH24:MI') as duration_str,
-			outside_temp_avg,
+			(SELECT outside_temp FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) AS outside_temp_avg,
 			position.odometer as odometer,
 			(SELECT unit_of_length FROM settings LIMIT 1) as unit_of_length,
 			(SELECT unit_of_temperature FROM settings LIMIT 1) as unit_of_temperature,
@@ -172,10 +169,9 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		&chargeEnergyAdded,
 		&chargeEnergyUsed,
 		&cost,
-		&startIdealRange,
-		&currentIdealRange,
 		&startRatedRange,
 		&currentRatedRange,
+		&addedRatedRange,
 		&startBatteryLevel,
 		&currentBatteryLevel,
 		&durationMin,
@@ -227,20 +223,16 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		charge.Cost = cost.Float64
 	}
 
-	if startIdealRange.Valid {
-		charge.RangeIdeal.StartRange = startIdealRange.Float64
-	}
-
-	if currentIdealRange.Valid {
-		charge.RangeIdeal.CurrentRange = currentIdealRange.Float64
-	}
-
 	if startRatedRange.Valid {
-		charge.RangeRated.StartRange = startRatedRange.Float64
+		charge.RatedRange.StartRange = startRatedRange.Float64
 	}
 
 	if currentRatedRange.Valid {
-		charge.RangeRated.CurrentRange = currentRatedRange.Float64
+		charge.RatedRange.CurrentRange = currentRatedRange.Float64
+	}
+
+	if addedRatedRange.Valid {
+		charge.RatedRange.AddedRange = addedRatedRange.Float64
 	}
 
 	if startBatteryLevel.Valid {
@@ -269,10 +261,9 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 
 	// Converting values based on settings UnitsLength
 	if UnitsLength == "mi" {
-		charge.RangeIdeal.StartRange = kilometersToMiles(charge.RangeIdeal.StartRange)
-		charge.RangeIdeal.CurrentRange = kilometersToMiles(charge.RangeIdeal.CurrentRange)
-		charge.RangeRated.StartRange = kilometersToMiles(charge.RangeRated.StartRange)
-		charge.RangeRated.CurrentRange = kilometersToMiles(charge.RangeRated.CurrentRange)
+		charge.RatedRange.StartRange = kilometersToMiles(charge.RatedRange.StartRange)
+		charge.RatedRange.CurrentRange = kilometersToMiles(charge.RatedRange.CurrentRange)
+		charge.RatedRange.AddedRange = kilometersToMiles(charge.RatedRange.AddedRange)
 		charge.Odometer = kilometersToMiles(charge.Odometer)
 	}
 	// Converting values based on settings UnitsTemperature
@@ -297,7 +288,6 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 			COALESCE(charger_pilot_current, 0) as charger_pilot_current,
 			COALESCE(charger_power, 0) as charger_power,
 			COALESCE(charger_voltage, 0) as charger_voltage,
-			ideal_battery_range_km AS ideal_battery_range,
 			rated_battery_range_km AS rated_battery_range,
 			battery_heater,
 			battery_heater_on,
@@ -326,10 +316,10 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	for rows.Next() {
 		// Create temp variables to handle NULL values
 		var (
-			detailBatteryLevel, detailUsableBatteryLevel                                                 sql.NullInt64
-			detailChargeEnergyAdded, detailIdealBatteryRange, detailRatedBatteryRange, detailOutsideTemp sql.NullFloat64
-			detailConnChargeCable, detailFastChargerType                                                 sql.NullString
-			detailFastChargerBrand                                                                       sql.NullString
+			detailBatteryLevel, detailUsableBatteryLevel                        sql.NullInt64
+			detailChargeEnergyAdded, detailRatedBatteryRange, detailOutsideTemp sql.NullFloat64
+			detailConnChargeCable, detailFastChargerType                        sql.NullString
+			detailFastChargerBrand                                              sql.NullString
 		)
 
 		// Creating chargedetails object based on struct
@@ -348,7 +338,6 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 			&chargedetails.ChargerDetails.ChargerPilotCurrent,
 			&chargedetails.ChargerDetails.ChargerPower,
 			&chargedetails.ChargerDetails.ChargerVoltage,
-			&detailIdealBatteryRange,
 			&detailRatedBatteryRange,
 			&chargedetails.BatteryInfo.BatteryHeater,
 			&chargedetails.BatteryInfo.BatteryHeaterOn,
@@ -373,25 +362,27 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 			chargedetails.ChargeEnergyAdded = detailChargeEnergyAdded.Float64
 		}
 
-		if detailIdealBatteryRange.Valid {
-			chargedetails.BatteryInfo.IdealBatteryRange = detailIdealBatteryRange.Float64
-		}
-
 		if detailRatedBatteryRange.Valid {
 			chargedetails.BatteryInfo.RatedBatteryRange = detailRatedBatteryRange.Float64
 		}
 
+		// Properly handle NULL values for string fields by using interface{}
 		if detailConnChargeCable.Valid {
 			chargedetails.ConnChargeCable = detailConnChargeCable.String
+		} else {
+			chargedetails.ConnChargeCable = nil
 		}
 
 		if detailFastChargerBrand.Valid {
-			chargedetails.FastChargerInfo.FastChargerBrand.String = detailFastChargerBrand.String
-			chargedetails.FastChargerInfo.FastChargerBrand.Valid = true
+			chargedetails.FastChargerInfo.FastChargerBrand = detailFastChargerBrand.String
+		} else {
+			chargedetails.FastChargerInfo.FastChargerBrand = nil
 		}
 
 		if detailFastChargerType.Valid {
 			chargedetails.FastChargerInfo.FastChargerType = detailFastChargerType.String
+		} else {
+			chargedetails.FastChargerInfo.FastChargerType = nil
 		}
 
 		if detailOutsideTemp.Valid {
@@ -399,10 +390,6 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		}
 
 		// Converting values based on settings UnitsLength
-		if UnitsLength == "mi" && detailIdealBatteryRange.Valid {
-			chargedetails.BatteryInfo.IdealBatteryRange = kilometersToMiles(chargedetails.BatteryInfo.IdealBatteryRange)
-		}
-
 		if UnitsLength == "mi" && detailRatedBatteryRange.Valid {
 			chargedetails.BatteryInfo.RatedBatteryRange = kilometersToMiles(chargedetails.BatteryInfo.RatedBatteryRange)
 		}
