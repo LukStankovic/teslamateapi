@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
+	"time"
 )
 
 // TeslaMateAPICarsChargesCurrentV1 func
@@ -13,6 +14,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	var (
 		CarsChargesCurrentError1 = "Unable to load current charge."
 		CarsChargesCurrentError2 = "Unable to load current charge details."
+		CarsChargesCurrentError3 = "No active charging in progress."
 	)
 
 	// getting CarID param from URL
@@ -354,13 +356,14 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 			chargedetails.ConnChargeCable = nil
 		}
 
-		if detailFastChargerBrand.Valid {
+		// Fix for fast_charger_brand and fast_charger_type when "<invalid>"
+		if detailFastChargerBrand.Valid && detailFastChargerBrand.String != "<invalid>" {
 			chargedetails.FastChargerInfo.FastChargerBrand = &detailFastChargerBrand.String
 		} else {
 			chargedetails.FastChargerInfo.FastChargerBrand = nil
 		}
 
-		if detailFastChargerType.Valid {
+		if detailFastChargerType.Valid && detailFastChargerType.String != "<invalid>" {
 			chargedetails.FastChargerInfo.FastChargerType = &detailFastChargerType.String
 		} else {
 			chargedetails.FastChargerInfo.FastChargerType = nil
@@ -393,15 +396,34 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		ChargeDetailsData = append(ChargeDetailsData, chargedetails)
 	}
 
-	// Set the ChargeDetails in the charge
-	charge.ChargeDetails = ChargeDetailsData
-
 	// Checking for errors in the rows result
 	err = rows.Err()
 	if err != nil {
 		TeslaMateAPIHandleErrorResponse(c, "TeslaMateAPICarsChargesCurrentV1", CarsChargesCurrentError2, err.Error())
 		return
 	}
+
+	// Check if the charge details array contains any entries
+	if len(ChargeDetailsData) > 0 {
+		// Parse the date of the most recent charge detail
+		latestDetailDate, err := time.Parse(time.RFC3339, ChargeDetailsData[0].Date)
+		if err != nil {
+			TeslaMateAPIHandleErrorResponse(c, "TeslaMateAPICarsChargesCurrentV1", CarsChargesCurrentError2, "Error parsing charge detail date")
+			return
+		}
+
+		// Calculate time elapsed since the most recent detail
+		timeElapsed := time.Since(latestDetailDate)
+
+		// If the most recent detail is more than 15 minutes old, consider it incomplete/not current
+		if timeElapsed.Minutes() > 15 {
+			TeslaMateAPIHandleErrorResponse(c, "TeslaMateAPICarsChargesCurrentV1", CarsChargesCurrentError3, "No active charging in progress. There are incomplete charges but last update was more than 15 minutes ago.")
+			return
+		}
+	}
+
+	// Set the ChargeDetails in the charge
+	charge.ChargeDetails = ChargeDetailsData
 
 	// Build the data-blob
 	jsonData := JSONData{
