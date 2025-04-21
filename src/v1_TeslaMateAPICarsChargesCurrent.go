@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
 )
@@ -46,9 +45,9 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	}
 	// FastChargerInfo struct - child of ChargeDetails
 	type FastChargerInfo struct {
-		FastChargerPresent bool        `json:"fast_charger_present"` // bool
-		FastChargerBrand   interface{} `json:"fast_charger_brand"`   // string or null
-		FastChargerType    interface{} `json:"fast_charger_type"`    // string or null
+		FastChargerPresent bool    `json:"fast_charger_present"`         // bool
+		FastChargerBrand   *string `json:"fast_charger_brand,omitempty"` // string or null
+		FastChargerType    *string `json:"fast_charger_type,omitempty"`  // string or null
 	}
 	// BatteryInfo struct - child of ChargeDetails
 	type BatteryInfo struct {
@@ -59,27 +58,25 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	}
 	// ChargeDetails struct - child of Charge
 	type ChargeDetails struct {
-		DetailID             int             `json:"detail_id"`                // integer
-		Date                 string          `json:"date"`                     // string
-		BatteryLevel         int             `json:"battery_level"`            // int
-		UsableBatteryLevel   int             `json:"usable_battery_level"`     // int
-		ChargeEnergyAdded    float64         `json:"charge_energy_added"`      // float64
-		NotEnoughPowerToHeat NullBool        `json:"not_enough_power_to_heat"` // bool
-		ChargerDetails       ChargerDetails  `json:"charger_details"`          // struct
-		BatteryInfo          BatteryInfo     `json:"battery_info"`             // struct
-		ConnChargeCable      interface{}     `json:"conn_charge_cable"`        // string or null
-		FastChargerInfo      FastChargerInfo `json:"fast_charger_info"`        // struct
-		OutsideTemp          float64         `json:"outside_temp"`             // float64
+		DetailID             int             `json:"detail_id"`                   // integer
+		Date                 string          `json:"date"`                        // string
+		BatteryLevel         int             `json:"battery_level"`               // int
+		UsableBatteryLevel   int             `json:"usable_battery_level"`        // int
+		ChargeEnergyAdded    float64         `json:"charge_energy_added"`         // float64
+		NotEnoughPowerToHeat NullBool        `json:"not_enough_power_to_heat"`    // bool
+		ChargerDetails       ChargerDetails  `json:"charger_details"`             // struct
+		BatteryInfo          BatteryInfo     `json:"battery_info"`                // struct
+		ConnChargeCable      interface{}     `json:"conn_charge_cable,omitempty"` // string or null
+		FastChargerInfo      FastChargerInfo `json:"fast_charger_info"`           // struct
+		OutsideTemp          float64         `json:"outside_temp"`                // float64
 	}
 	// Charge struct - child of Data
 	type Charge struct {
 		ChargeID          int             `json:"charge_id"`           // int
 		StartDate         string          `json:"start_date"`          // string
-		EndDate           string          `json:"end_date"`            // string
 		IsCharging        bool            `json:"is_charging"`         // bool
 		Address           string          `json:"address"`             // string
 		ChargeEnergyAdded float64         `json:"charge_energy_added"` // float64
-		ChargeEnergyUsed  float64         `json:"charge_energy_used"`  // float64
 		Cost              float64         `json:"cost"`                // float64
 		DurationMin       int             `json:"duration_min"`        // int
 		DurationStr       string          `json:"duration_str"`        // string
@@ -93,6 +90,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	type TeslaMateUnits struct {
 		UnitsLength      string `json:"unit_of_length"`      // string
 		UnitsTemperature string `json:"unit_of_temperature"` // string
+		PreferredRange   string `json:"preferred_range"`     // string
 	}
 	// Data struct - child of JSONData
 	type Data struct {
@@ -118,23 +116,20 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	var (
 		startRatedRange, currentRatedRange, addedRatedRange sql.NullFloat64
 		startBatteryLevel, currentBatteryLevel              sql.NullInt64
-		chargeEnergyAdded, chargeEnergyUsed, cost           sql.NullFloat64
+		chargeEnergyAdded, cost                             sql.NullFloat64
 		outsideTempAvg                                      sql.NullFloat64
 		odometer                                            sql.NullFloat64
 		durationMin                                         sql.NullFloat64
 		durationStr, address                                sql.NullString
-		endDate                                             sql.NullString
 	)
 
-	// Get the most recent charging process for this car, prioritizing charges in progress
+	// Construct the query with the preferred range setting
 	query := `
 		SELECT
 			charging_processes.id AS charge_id,
 			start_date,
-			end_date,
 			COALESCE(geofence.name, CONCAT_WS(', ', COALESCE(address.name, nullif(CONCAT_WS(' ', address.road, address.house_number), '')), address.city)) AS address,
 			(SELECT charge_energy_added FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) AS charge_energy_added,
-			COALESCE(charge_energy_used, 0) AS charge_energy_used,
 			COALESCE(cost, 0) AS cost,
 			start_rated_range_km AS start_rated_range,
 			(SELECT rated_battery_range_km FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) AS current_rated_range,
@@ -164,10 +159,8 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	err := row.Scan(
 		&charge.ChargeID,
 		&charge.StartDate,
-		&endDate,
 		&address,
 		&chargeEnergyAdded,
-		&chargeEnergyUsed,
 		&cost,
 		&startRatedRange,
 		&currentRatedRange,
@@ -196,15 +189,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		return
 	}
 
-	// Set IsCharging and EndDate
 	charge.IsCharging = isCharging
-	if endDate.Valid {
-		charge.EndDate = getTimeInTimeZone(endDate.String)
-	} else {
-		charge.EndDate = ""
-	}
-
-	// Handle NULLs in the database
 	if address.Valid {
 		charge.Address = address.String
 	} else {
@@ -213,10 +198,6 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 
 	if chargeEnergyAdded.Valid {
 		charge.ChargeEnergyAdded = chargeEnergyAdded.Float64
-	}
-
-	if chargeEnergyUsed.Valid {
-		charge.ChargeEnergyUsed = chargeEnergyUsed.Float64
 	}
 
 	if cost.Valid {
@@ -275,7 +256,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	charge.StartDate = getTimeInTimeZone(charge.StartDate)
 
 	// Getting detailed charge data from database
-	query = `
+	detailsQuery := `
 		SELECT
 			id AS detail_id,
 			date,
@@ -301,7 +282,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		WHERE charging_process_id=$1
 		ORDER BY id DESC
 		LIMIT 50;`
-	rows, err := db.Query(query, charge.ChargeID)
+	rows, err := db.Query(detailsQuery, charge.ChargeID)
 
 	// Checking for errors in query
 	if err != nil {
@@ -374,13 +355,13 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		}
 
 		if detailFastChargerBrand.Valid {
-			chargedetails.FastChargerInfo.FastChargerBrand = detailFastChargerBrand.String
+			chargedetails.FastChargerInfo.FastChargerBrand = &detailFastChargerBrand.String
 		} else {
 			chargedetails.FastChargerInfo.FastChargerBrand = nil
 		}
 
 		if detailFastChargerType.Valid {
-			chargedetails.FastChargerInfo.FastChargerType = detailFastChargerType.String
+			chargedetails.FastChargerInfo.FastChargerType = &detailFastChargerType.String
 		} else {
 			chargedetails.FastChargerInfo.FastChargerType = nil
 		}
