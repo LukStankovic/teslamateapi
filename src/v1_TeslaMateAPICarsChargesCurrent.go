@@ -45,9 +45,9 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	}
 	// FastChargerInfo struct - child of ChargeDetails
 	type FastChargerInfo struct {
-		FastChargerPresent bool       `json:"fast_charger_present"` // bool
-		FastChargerBrand   NullString `json:"fast_charger_brand"`   // string
-		FastChargerType    string     `json:"fast_charger_type"`    // string
+		FastChargerPresent bool           `json:"fast_charger_present"` // bool
+		FastChargerBrand   sql.NullString `json:"fast_charger_brand"`   // string
+		FastChargerType    string         `json:"fast_charger_type"`    // string
 	}
 	// BatteryInfo struct - child of ChargeDetails
 	type BatteryInfo struct {
@@ -115,6 +115,19 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		isCharging                    bool
 	)
 
+	// Create temp vars to handle NULL values in the database
+	var (
+		startIdealRange, currentIdealRange        sql.NullFloat64
+		startRatedRange, currentRatedRange        sql.NullFloat64
+		startBatteryLevel, currentBatteryLevel    sql.NullInt64
+		chargeEnergyAdded, chargeEnergyUsed, cost sql.NullFloat64
+		outsideTempAvg                            sql.NullFloat64
+		odometer                                  sql.NullFloat64
+		durationMin                               sql.NullFloat64 // Changed from sql.NullInt64 to sql.NullFloat64
+		durationStr, address                      sql.NullString
+		endDate                                   sql.NullString
+	)
+
 	// Get the most recent charging process for this car, prioritizing charges in progress
 	query := `
 		SELECT
@@ -148,29 +161,27 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		ORDER BY end_date IS NULL DESC, start_date DESC
 		LIMIT 1;`
 
-	var endDate sql.NullString
-
 	row := db.QueryRow(query, CarID)
 
-	// Scanning row and putting values into the charge
+	// Scanning row and putting values into the temp vars to handle NULLs
 	err := row.Scan(
 		&charge.ChargeID,
 		&charge.StartDate,
 		&endDate,
-		&charge.Address,
-		&charge.ChargeEnergyAdded,
-		&charge.ChargeEnergyUsed,
-		&charge.Cost,
-		&charge.RangeIdeal.StartRange,
-		&charge.RangeIdeal.CurrentRange,
-		&charge.RangeRated.StartRange,
-		&charge.RangeRated.CurrentRange,
-		&charge.BatteryDetails.StartBatteryLevel,
-		&charge.BatteryDetails.CurrentBatteryLevel,
-		&charge.DurationMin,
-		&charge.DurationStr,
-		&charge.OutsideTempAvg,
-		&charge.Odometer,
+		&address,
+		&chargeEnergyAdded,
+		&chargeEnergyUsed,
+		&cost,
+		&startIdealRange,
+		&currentIdealRange,
+		&startRatedRange,
+		&currentRatedRange,
+		&startBatteryLevel,
+		&currentBatteryLevel,
+		&durationMin,
+		&durationStr,
+		&outsideTempAvg,
+		&odometer,
 		&UnitsLength,
 		&UnitsTemperature,
 		&CarName,
@@ -179,7 +190,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 
 	switch err {
 	case sql.ErrNoRows:
-		TeslaMateAPIHandleErrorResponse(c, "TeslaMateAPICarsChargesCurrentV1", "No current charge found.", err.Error())
+		TeslaMateAPIHandleErrorResponse(c, "TeslaMateAPICarsChargesCurrentV1", "No current charge found.", "No rows were returned")
 		return
 	case nil:
 		// nothing wrong.. continuing
@@ -197,6 +208,65 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		charge.EndDate = ""
 	}
 
+	// Handle NULLs in the database
+	if address.Valid {
+		charge.Address = address.String
+	} else {
+		charge.Address = "Unknown"
+	}
+
+	if chargeEnergyAdded.Valid {
+		charge.ChargeEnergyAdded = chargeEnergyAdded.Float64
+	}
+
+	if chargeEnergyUsed.Valid {
+		charge.ChargeEnergyUsed = chargeEnergyUsed.Float64
+	}
+
+	if cost.Valid {
+		charge.Cost = cost.Float64
+	}
+
+	if startIdealRange.Valid {
+		charge.RangeIdeal.StartRange = startIdealRange.Float64
+	}
+
+	if currentIdealRange.Valid {
+		charge.RangeIdeal.CurrentRange = currentIdealRange.Float64
+	}
+
+	if startRatedRange.Valid {
+		charge.RangeRated.StartRange = startRatedRange.Float64
+	}
+
+	if currentRatedRange.Valid {
+		charge.RangeRated.CurrentRange = currentRatedRange.Float64
+	}
+
+	if startBatteryLevel.Valid {
+		charge.BatteryDetails.StartBatteryLevel = int(startBatteryLevel.Int64)
+	}
+
+	if currentBatteryLevel.Valid {
+		charge.BatteryDetails.CurrentBatteryLevel = int(currentBatteryLevel.Int64)
+	}
+
+	if durationMin.Valid {
+		charge.DurationMin = int(durationMin.Float64) // Convert float64 to int
+	}
+
+	if durationStr.Valid {
+		charge.DurationStr = durationStr.String
+	}
+
+	if outsideTempAvg.Valid {
+		charge.OutsideTempAvg = outsideTempAvg.Float64
+	}
+
+	if odometer.Valid {
+		charge.Odometer = odometer.Float64
+	}
+
 	// Converting values based on settings UnitsLength
 	if UnitsLength == "mi" {
 		charge.RangeIdeal.StartRange = kilometersToMiles(charge.RangeIdeal.StartRange)
@@ -206,7 +276,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		charge.Odometer = kilometersToMiles(charge.Odometer)
 	}
 	// Converting values based on settings UnitsTemperature
-	if UnitsTemperature == "F" {
+	if UnitsTemperature == "F" && outsideTempAvg.Valid {
 		charge.OutsideTempAvg = celsiusToFahrenheit(charge.OutsideTempAvg)
 	}
 
@@ -254,41 +324,91 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 
 	// Looping through all results
 	for rows.Next() {
+		// Create temp variables to handle NULL values
+		var (
+			detailBatteryLevel, detailUsableBatteryLevel                                                 sql.NullInt64
+			detailChargeEnergyAdded, detailIdealBatteryRange, detailRatedBatteryRange, detailOutsideTemp sql.NullFloat64
+			detailConnChargeCable, detailFastChargerType                                                 sql.NullString
+			detailFastChargerBrand                                                                       sql.NullString
+		)
+
 		// Creating chargedetails object based on struct
 		chargedetails := ChargeDetails{}
 
-		// Scanning row and putting values into the chargedetails
+		// Scanning row and putting values into temporary variables
 		err = rows.Scan(
 			&chargedetails.DetailID,
 			&chargedetails.Date,
-			&chargedetails.BatteryLevel,
-			&chargedetails.UsableBatteryLevel,
-			&chargedetails.ChargeEnergyAdded,
+			&detailBatteryLevel,
+			&detailUsableBatteryLevel,
+			&detailChargeEnergyAdded,
 			&chargedetails.NotEnoughPowerToHeat,
 			&chargedetails.ChargerDetails.ChargerActualCurrent,
 			&chargedetails.ChargerDetails.ChargerPhases,
 			&chargedetails.ChargerDetails.ChargerPilotCurrent,
 			&chargedetails.ChargerDetails.ChargerPower,
 			&chargedetails.ChargerDetails.ChargerVoltage,
-			&chargedetails.BatteryInfo.IdealBatteryRange,
-			&chargedetails.BatteryInfo.RatedBatteryRange,
+			&detailIdealBatteryRange,
+			&detailRatedBatteryRange,
 			&chargedetails.BatteryInfo.BatteryHeater,
 			&chargedetails.BatteryInfo.BatteryHeaterOn,
 			&chargedetails.BatteryInfo.BatteryHeaterNoPower,
-			&chargedetails.ConnChargeCable,
+			&detailConnChargeCable,
 			&chargedetails.FastChargerInfo.FastChargerPresent,
-			&chargedetails.FastChargerInfo.FastChargerBrand,
-			&chargedetails.FastChargerInfo.FastChargerType,
-			&chargedetails.OutsideTemp,
+			&detailFastChargerBrand,
+			&detailFastChargerType,
+			&detailOutsideTemp,
 		)
 
+		// Handle NULL values
+		if detailBatteryLevel.Valid {
+			chargedetails.BatteryLevel = int(detailBatteryLevel.Int64)
+		}
+
+		if detailUsableBatteryLevel.Valid {
+			chargedetails.UsableBatteryLevel = int(detailUsableBatteryLevel.Int64)
+		}
+
+		if detailChargeEnergyAdded.Valid {
+			chargedetails.ChargeEnergyAdded = detailChargeEnergyAdded.Float64
+		}
+
+		if detailIdealBatteryRange.Valid {
+			chargedetails.BatteryInfo.IdealBatteryRange = detailIdealBatteryRange.Float64
+		}
+
+		if detailRatedBatteryRange.Valid {
+			chargedetails.BatteryInfo.RatedBatteryRange = detailRatedBatteryRange.Float64
+		}
+
+		if detailConnChargeCable.Valid {
+			chargedetails.ConnChargeCable = detailConnChargeCable.String
+		}
+
+		if detailFastChargerBrand.Valid {
+			chargedetails.FastChargerInfo.FastChargerBrand.String = detailFastChargerBrand.String
+			chargedetails.FastChargerInfo.FastChargerBrand.Valid = true
+		}
+
+		if detailFastChargerType.Valid {
+			chargedetails.FastChargerInfo.FastChargerType = detailFastChargerType.String
+		}
+
+		if detailOutsideTemp.Valid {
+			chargedetails.OutsideTemp = detailOutsideTemp.Float64
+		}
+
 		// Converting values based on settings UnitsLength
-		if UnitsLength == "mi" {
+		if UnitsLength == "mi" && detailIdealBatteryRange.Valid {
 			chargedetails.BatteryInfo.IdealBatteryRange = kilometersToMiles(chargedetails.BatteryInfo.IdealBatteryRange)
+		}
+
+		if UnitsLength == "mi" && detailRatedBatteryRange.Valid {
 			chargedetails.BatteryInfo.RatedBatteryRange = kilometersToMiles(chargedetails.BatteryInfo.RatedBatteryRange)
 		}
+
 		// Converting values based on settings UnitsTemperature
-		if UnitsTemperature == "F" {
+		if UnitsTemperature == "F" && detailOutsideTemp.Valid {
 			chargedetails.OutsideTemp = celsiusToFahrenheit(chargedetails.OutsideTemp)
 		}
 
