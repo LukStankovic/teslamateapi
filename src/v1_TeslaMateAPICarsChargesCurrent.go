@@ -92,7 +92,6 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 	type TeslaMateUnits struct {
 		UnitsLength      string `json:"unit_of_length"`      // string
 		UnitsTemperature string `json:"unit_of_temperature"` // string
-		PreferredRange   string `json:"preferred_range"`     // string
 	}
 	// Data struct - child of JSONData
 	type Data struct {
@@ -282,8 +281,7 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 			outside_temp
 		FROM charges
 		WHERE charging_process_id=$1
-		ORDER BY id DESC
-		LIMIT 50;`
+		ORDER BY id DESC;`
 	rows, err := db.Query(detailsQuery, charge.ChargeID)
 
 	// Checking for errors in query
@@ -386,6 +384,12 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		// Adjusting to timezone differences from UTC to be user-specific
 		chargedetails.Date = getTimeInTimeZone(chargedetails.Date)
 
+		if chargedetails.ChargerDetails.ChargerPhases == 2 {
+			chargedetails.ChargerDetails.ChargerPhases = 3
+		} else {
+			chargedetails.ChargerDetails.ChargerPhases = 1
+		}
+
 		// Checking for errors after scanning
 		if err != nil {
 			TeslaMateAPIHandleErrorResponse(c, "TeslaMateAPICarsChargesCurrentV1", CarsChargesCurrentError2, err.Error())
@@ -424,6 +428,14 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 
 	// Set the ChargeDetails in the charge
 	charge.ChargeDetails = ChargeDetailsData
+
+	if charge.RatedRange.StartRange == 0 && len(ChargeDetailsData) > 0 {
+		charge.RatedRange.StartRange = ChargeDetailsData[0].BatteryInfo.RatedBatteryRange
+	}
+
+	if charge.RatedRange.AddedRange == 0 {
+		charge.RatedRange.AddedRange = charge.RatedRange.CurrentRange - charge.RatedRange.StartRange
+	}
 
 	// Build the data-blob
 	jsonData := JSONData{
