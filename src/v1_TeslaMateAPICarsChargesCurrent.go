@@ -115,13 +115,13 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 
 	// Create temp vars to handle NULL values in the database
 	var (
-		startRatedRange, currentRatedRange, addedRatedRange sql.NullFloat64
-		startBatteryLevel, currentBatteryLevel              sql.NullInt64
-		chargeEnergyAdded, cost                             sql.NullFloat64
-		outsideTempAvg                                      sql.NullFloat64
-		odometer                                            sql.NullFloat64
-		durationMin                                         sql.NullFloat64
-		durationStr, address                                sql.NullString
+		startRatedRange, currentRatedRange     sql.NullFloat64
+		startBatteryLevel, currentBatteryLevel sql.NullInt64
+		chargeEnergyAdded, cost                sql.NullFloat64
+		outsideTempAvg                         sql.NullFloat64
+		odometer                               sql.NullFloat64
+		durationMin                            sql.NullFloat64
+		durationStr, address                   sql.NullString
 	)
 
 	// Construct the query with the preferred range setting
@@ -132,9 +132,8 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 			COALESCE(geofence.name, CONCAT_WS(', ', COALESCE(address.name, nullif(CONCAT_WS(' ', address.road, address.house_number), '')), address.city)) AS address,
 			(SELECT charge_energy_added FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) AS charge_energy_added,
 			COALESCE(cost, 0) AS cost,
-			start_rated_range_km AS start_rated_range,
+	        (SELECT rated_battery_range_km FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id ASC LIMIT 1) AS start_rated_range,
 			(SELECT rated_battery_range_km FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) AS current_rated_range,
-			COALESCE((SELECT rated_battery_range_km FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) - start_rated_range_km, 0) AS added_rated_range,
 			(SELECT battery_level FROM charges WHERE charging_process_id = charging_processes.id ORDER BY date ASC LIMIT 1) AS start_battery_level,
 			(SELECT battery_level FROM charges WHERE charging_process_id = charging_processes.id ORDER BY id DESC LIMIT 1) AS current_battery_level,
 			EXTRACT(EPOCH FROM (COALESCE(end_date, NOW()) - start_date))/60 AS duration_min,
@@ -165,7 +164,6 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		&cost,
 		&startRatedRange,
 		&currentRatedRange,
-		&addedRatedRange,
 		&startBatteryLevel,
 		&currentBatteryLevel,
 		&durationMin,
@@ -213,8 +211,8 @@ func TeslaMateAPICarsChargesCurrentV1(c *gin.Context) {
 		charge.RatedRange.CurrentRange = currentRatedRange.Float64
 	}
 
-	if addedRatedRange.Valid {
-		charge.RatedRange.AddedRange = addedRatedRange.Float64
+	if addedRange := charge.RatedRange.CurrentRange - charge.RatedRange.StartRange; addedRange > 0 {
+		charge.RatedRange.AddedRange = addedRange
 	}
 
 	if startBatteryLevel.Valid {
